@@ -23,6 +23,6 @@ interface IViewport {
     Point getSize(Point size);
 
     Point getPhysicalSize(Point size);
-    
+
     IViewport draw(Canvas canvas);
 }

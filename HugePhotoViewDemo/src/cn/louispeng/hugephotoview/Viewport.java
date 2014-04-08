@@ -8,34 +8,29 @@
 package cn.louispeng.hugephotoview;
 
 import android.graphics.Bitmap;
+import android.graphics.Bitmap.Config;
 import android.graphics.Canvas;
 import android.graphics.Point;
 import android.graphics.Rect;
-import android.graphics.Bitmap.Config;
 
 /**
  * @author pengluyu
  */
 class Viewport implements IViewport {
+
     // region of Viewport
-    Config CONFIG = Config.RGB_565;
+    public static final String TAG = "Viewport";
+
+    Config CONFIG = Config.ARGB_8888;
 
     /** The mBitmap of the current viewport */
     Bitmap mBitmap = null;
 
     /** A Rectangle that defines where the Viewport is within the scene */
-    Rect mWindow = new Rect(0, 0, 0, 0);
+    Rect mWindow = new Rect(-1, -1, -1, -1);
 
     Viewport() {
 
-    }
-
-    @Override
-    protected void finalize() throws Throwable {
-        if (null != mBitmap) {
-            mBitmap.recycle();
-        }
-        super.finalize();
     }
 
     // endregion of Viewport

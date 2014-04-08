@@ -7,14 +7,14 @@
 
 package cn.louispeng.hugephotoview;
 
-import cn.louispeng.hugephotoview.ViewportWithCache.CacheState;
+import java.io.IOException;
 
 import android.graphics.BitmapFactory;
+import android.graphics.BitmapFactory.Options;
 import android.graphics.Canvas;
 import android.graphics.Point;
-
-import java.io.IOException;
-import java.io.InputStream;
+import android.view.SurfaceHolder;
+import cn.louispeng.hugephotoview.ViewportWithCache.CacheState;
 
 /*
  * (0,0)---------------------------------------------------------------+
@@ -44,22 +44,19 @@ import java.io.InputStream;
 class HugePhotoScene {
     // region of HugePhotoScene
 
-    Point mSceneSize;
+    Point mSceneSize = new Point();
 
-    HugePhotoScene(InputStream inputStream) throws IOException {
-        BitmapFactory.Options opts = new BitmapFactory.Options();
+    ViewportWithCache mViewport;
+
+    HugePhotoScene(String filepath) throws IOException {
+        Options opts = new Options();
 
         // Grab the bounds for the scene dimensions
         opts.inJustDecodeBounds = true;
-        BitmapFactory.decodeStream(inputStream, null, opts);
-        setSceneSize(opts.outWidth, opts.outHeight);
+        BitmapFactory.decodeFile(filepath, opts);
+        mSceneSize.set(opts.outWidth, opts.outHeight);
 
-        initializViewport(inputStream);
-    }
-
-    HugePhotoScene setSceneSize(int width, int height) {
-        mSceneSize.set(width, height);
-        return this;
+        initializViewport(filepath);
     }
 
     /**
@@ -75,18 +72,8 @@ class HugePhotoScene {
     // endregion
 
     // region of the CacheViewport
-    ViewportWithCache mViewport;
-
-    /**
-     * Initializes the cache
-     * 
-     * @throws IOException
-     */
-    private void initializViewport(InputStream inputStream) throws IOException {
-        if (null != mViewport) {
-            mViewport.stopCaching().clearCache();
-        }
-        mViewport = new ViewportWithCache(mSceneSize, inputStream);
+    private void initializViewport(String filepath) throws IOException {
+        mViewport = new ViewportWithCache(mSceneSize, filepath);
         if (mViewport.getCacheState() == CacheState.UNINITIALIZED) {
             synchronized (mViewport) {
                 mViewport.setCacheState(CacheState.INITIALIZED);
@@ -106,32 +93,41 @@ class HugePhotoScene {
         return this;
     }
 
-    /**
-     * Suspends or unsuspends the cache thread. This can be used to temporarily stop the cache from updating during a
-     * fling event.
-     * 
-     * @param suspend True to suspend the cache. False to unsuspend.
-     */
-    HugePhotoScene setSuspend(boolean suspend) {
-        if (suspend) {
+    /** Suspends the cache thread. This can be used to temporarily stop the cache from updating during a fling event. */
+    HugePhotoScene suspendCache() {
+        if (mViewport.getCacheState() != CacheState.UNINITIALIZED) {
             synchronized (mViewport) {
                 mViewport.setCacheState(CacheState.SUSPEND);
-            }
-        } else {
-            if (mViewport.getCacheState() == CacheState.SUSPEND) {
-                synchronized (mViewport) {
-                    mViewport.setCacheState(CacheState.INITIALIZED);
-                }
             }
         }
         return this;
     }
 
-    /**
-     * Invalidate the scene. This causes it to refill
-     */
+    /** Resume the cache thread. */
+    HugePhotoScene resumeCache() {
+        if (mViewport.getCacheState() == CacheState.SUSPEND) {
+            synchronized (mViewport) {
+                mViewport.setCacheState(CacheState.INITIALIZED);
+            }
+        }
+        return this;
+    }
+
+    /** Invalidate the scene. This causes it to refill */
     HugePhotoScene invalidate() {
         mViewport.invalidate();
+        return this;
+    }
+
+    Point getViewportSize(Point size) {
+        return mViewport.getSize(size);
+    }
+
+    HugePhotoScene setViewportSize(Point size) {
+        Point currentSize = mViewport.getSize(new Point());
+        if (!currentSize.equals(size.x, size.y)) {
+            mViewport.setSize(size);
+        }
         return this;
     }
 
@@ -158,8 +154,10 @@ class HugePhotoScene {
             y = mSceneSize.y - size.y;
         }
 
-        mViewport.setOrigin(new Point(x, y));
-
+        Point currentOrigin = mViewport.getOrigin(new Point());
+        if (!currentOrigin.equals(x, y)) {
+            mViewport.setOrigin(new Point(x, y));
+        }
         return this;
     }
 
@@ -174,8 +172,20 @@ class HugePhotoScene {
         return setViewportOrigin(new Point(x, y));
     }
 
-    HugePhotoScene draw(Canvas canvas) {
-        mViewport.draw(canvas);
+    HugePhotoScene draw(SurfaceHolder surfaceHolder) {
+        mViewport.updateVisibleViewportBitmap();
+        synchronized (surfaceHolder) {
+            if (mViewport.isViewportBitmapChanged()) {
+                Canvas canvas = surfaceHolder.lockCanvas();
+                if (canvas != null) {
+                    mViewport.draw(canvas);
+                }
+
+                if (canvas != null) {
+                    surfaceHolder.unlockCanvasAndPost(canvas);
+                }
+            }
+        }
         return this;
     }
     // endregion

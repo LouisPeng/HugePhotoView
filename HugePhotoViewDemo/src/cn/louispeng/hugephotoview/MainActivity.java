@@ -1,19 +1,18 @@
 
 package cn.louispeng.hugephotoview;
 
-import cn.louispeng.hugephotoview.demo.R;
+import java.io.IOException;
 
 import android.app.Activity;
 import android.content.Intent;
 import android.graphics.Point;
 import android.net.Uri;
 import android.os.Bundle;
+import android.os.Environment;
 import android.util.Log;
 import android.view.Window;
 import android.view.WindowManager;
-
-import java.io.IOException;
-import java.io.InputStream;
+import cn.louispeng.hugephotoview.demo.R;
 
 /**
  * An example full-screen activity that shows and hides the system UI (i.e. status bar and navigation/system bar) with
@@ -28,9 +27,13 @@ public class MainActivity extends Activity {
 
     private static final String KEY_Y = "Y";
 
-    private static final String KEY_FN = "FN";
+    private static final String KEY_FILEPATH = "FILE_PATH";
 
-    private String filename = null;
+    private static final String DEFAULT_PHOTO = Environment.getExternalStorageDirectory() + "/TombNotesMaps.jpg";
+
+    // private static final String DEFAULT_PHOTO = Environment.getExternalStorageDirectory() + "/world.jpg";
+
+    private String mFilePath = null;
 
     private HugePhotoSurfaceView mSurfaceView;
 
@@ -45,47 +48,46 @@ public class MainActivity extends Activity {
         // Setup/restore state
         if (savedInstanceState != null && savedInstanceState.containsKey(KEY_X)
                 && savedInstanceState.containsKey(KEY_Y)) {
-            Log.d(TAG, "restoring state");
+            Log.d(TAG, "Restoring state");
             int x = (Integer)savedInstanceState.get(KEY_X);
             int y = (Integer)savedInstanceState.get(KEY_Y);
 
-            String fn = null;
-            if (savedInstanceState.containsKey(KEY_FN))
-                fn = (String)savedInstanceState.get(KEY_FN);
+            if (savedInstanceState.containsKey(KEY_FILEPATH)) {
+                mFilePath = (String)savedInstanceState.get(KEY_FILEPATH);
+            }
+
+            if (mFilePath == null || mFilePath.length() == 0) {
+                Log.w(TAG, "Invalid file path");
+                finish();
+                return;
+            }
 
             try {
-                if (fn == null || fn.length() == 0) {
-                    Log.w(TAG, "Invalid file path");
-                    this.finish();
-                    return;
-                } else {
-                    mSurfaceView.setInputStream(new RandomAccessFileInputStream(fn));
-                }
-                mSurfaceView.setViewportOrigin(new Point(x, y));
-            } catch (java.io.IOException e) {
-                Log.e(TAG, e.getMessage());
+                mSurfaceView.setFilepath(mFilePath);
+            } catch (IOException e) {
+                e.printStackTrace();
             }
+
+            mSurfaceView.setViewportOrigin(new Point(x, y));
         } else {
             // Centering the map to start
             Intent intent = getIntent();
-            try {
-                Uri uri = null;
-                if (intent != null)
-                    uri = getIntent().getData();
-
-                InputStream is = null;
-                if (uri != null) {
-                    filename = uri.getPath();
-                    is = new RandomAccessFileInputStream(uri.getPath());
-                } else {
+            Uri uri = null;
+            if (intent != null && (uri = getIntent().getData()) != null) {
+                mFilePath = uri.getPath();
+                if (mFilePath == null || mFilePath.length() == 0) {
                     Log.w(TAG, "Invalid file path");
-                    this.finish();
+                    finish();
                     return;
                 }
+            } else {
+                mFilePath = DEFAULT_PHOTO;
+            }
 
-                mSurfaceView.setInputStream(is);
+            try {
+                mSurfaceView.setFilepath(mFilePath);
             } catch (IOException e) {
-                Log.e(TAG, e.getMessage());
+                e.printStackTrace();
             }
             mSurfaceView.setViewportCenter();
         }
@@ -93,14 +95,14 @@ public class MainActivity extends Activity {
 
     @Override
     protected void onSaveInstanceState(Bundle outState) {
-        Point p = mSurfaceView.getViewportOrigin(new Point());
+        Point viewportOrigin = mSurfaceView.getViewportOrigin(new Point());
 
-        outState.putInt(KEY_X, p.x);
-        outState.putInt(KEY_Y, p.y);
-        if (filename != null) {
-            outState.putString(KEY_FN, filename);
+        outState.putInt(KEY_X, viewportOrigin.x);
+        outState.putInt(KEY_Y, viewportOrigin.y);
+        if (mFilePath != null) {
+            outState.putString(KEY_FILEPATH, mFilePath);
         }
-        
+
         super.onSaveInstanceState(outState);
     }
 }

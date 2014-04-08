@@ -7,11 +7,9 @@
 
 package cn.louispeng.hugephotoview;
 
-import android.graphics.Bitmap;
-import android.os.Debug;
 import android.util.Log;
-
 import cn.louispeng.hugephotoview.ViewportWithCache.CacheState;
+import cn.louispeng.hugephotoview.demo.BuildConfig;
 
 /**
  * The CachingThread's job is to wait until the CacheState is START_UPDATE and then update the Cache bitmap.
@@ -48,21 +46,29 @@ public class ViewportWithCacheCachingThread extends Thread {
                 return;
             }
 
+            boolean continueCaching = false;
             synchronized (mCachedViewport) {
                 if (mCachedViewport.getCacheState() == CacheState.START_UPDATE) {
-                    try {
-                        mCachedViewport.fillCache();
-                    } catch (OutOfMemoryError e) {
-                        Log.d(TAG, "CacheThread out of memory");
-                        /*
-                         * Attempt to recover. Experience shows that if we do get an OutOfMemoryError, we're pretty
-                         * hosed and are going down.
-                         */
-                        synchronized (mCachedViewport) {
-                            mCachedViewport.fillCacheOutOfMemoryError(e);
-                            if (mCachedViewport.getCacheState() == CacheState.IN_UPDATE) {
-                                mCachedViewport.setCacheState(CacheState.START_UPDATE);
-                            }
+                    continueCaching = true;
+                }
+            }
+
+            if (continueCaching) {
+                try {
+                    mCachedViewport.fillCache();
+                } catch (OutOfMemoryError e) {
+                    if (BuildConfig.DEBUG) {
+                        Log.i(TAG, "CacheThread out of memory");
+                    }
+                    /*
+                     * Attempt to recover. Experience shows that if we do get an OutOfMemoryError, we're pretty hosed
+                     * and are going down.
+                     */
+                    mCachedViewport.fillCacheOutOfMemoryError(e);
+
+                    synchronized (mCachedViewport) {
+                        if (mCachedViewport.getCacheState() == CacheState.IN_UPDATE) {
+                            mCachedViewport.setCacheState(CacheState.START_UPDATE);
                         }
                     }
                 }

@@ -7,7 +7,6 @@
 
 package cn.louispeng.hugephotoview;
 
-import android.graphics.Canvas;
 import android.view.SurfaceHolder;
 
 /**
@@ -27,23 +26,12 @@ class HugePhotoSurfaceViewDrawingThread extends Thread {
     // region extends Thread
     @Override
     public void run() {
-        Canvas canvas;
         final SurfaceHolder surfaceHolder = mHugePhotoSurfaceView.getHolder();
         final HugePhotoScene scene = mHugePhotoSurfaceView.mScene;
         mRunning = true;
         while (mRunning) {
-            canvas = null;
-            try {
-                canvas = surfaceHolder.lockCanvas();
-                if (canvas != null) {
-                    synchronized (surfaceHolder) {
-                        scene.draw(canvas);// draw it
-                    }
-                }
-            } finally {
-                if (canvas != null) {
-                    surfaceHolder.unlockCanvasAndPost(canvas);
-                }
+            if (null != scene) {
+                scene.draw(surfaceHolder);// draw it
             }
             try {
                 // Don't hog the entire CPU

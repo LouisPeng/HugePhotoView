@@ -7,6 +7,8 @@
 
 package cn.louispeng.hugephotoview;
 
+import java.io.IOException;
+
 import android.annotation.SuppressLint;
 import android.graphics.Bitmap;
 import android.graphics.Bitmap.Config;
@@ -16,10 +18,6 @@ import android.graphics.BitmapRegionDecoder;
 import android.graphics.Canvas;
 import android.graphics.Point;
 import android.graphics.Rect;
-import android.util.Log;
-
-import java.io.IOException;
-import java.io.InputStream;
 
 /*
  * (0,0)------------------------------+
@@ -60,10 +58,9 @@ class ViewportWithCache implements IViewport {
         public static final int SUSPEND = 6;
     }
 
-    // The down sample size for the sample image. 1=1/2, 2=1/4 3=1/8, etc
-    final static Config DEFAULT_CONFIG = Config.ARGB_8888;
+    final static Config DEFAULT_CONFIG = Config.RGB_565;
 
-    final static int BYTES_PER_PIXEL = 4; // Related to DEFAULT_CONFIG
+    final static int BYTES_PER_PIXEL = 2; // Related to DEFAULT_CONFIG
 
     /**
      * What percent of total memory should we use for the cache? The bigger the cache, the longer it takes to read --
@@ -75,47 +72,46 @@ class ViewportWithCache implements IViewport {
     private final Point mSceneSize;
 
     // The viewport which is visible
-    private Viewport mVisableViewport;
+    private final Viewport mVisibleViewport;
+
+    // This flag is used to avoid unnecessary bitmap copy
+    private boolean mIsSampledBitmapChanged;
+
+    private boolean mIsViewportBitmapChanged;
 
     // Store the cached bitmap
     private Bitmap mCachedBitmap = null;
 
+    private Rect mCachedWindow;
+
     // Store the down sampled bitmap for quick look before the region decoding is finished
     private Bitmap mSampledBitmap = null;
 
-    private BitmapRegionDecoder mDecoder;
+    // The down sample size for the sample image. 1=1/2, 2=1/4 3=1/8, etc
+    private final int DOWN_SAMPLE_SHIFT = 2;
+
+    private final BitmapRegionDecoder mDecoder;
 
     private int mCacheState = CacheState.UNINITIALIZED;
 
     private ViewportWithCacheCachingThread mCacheThread;
 
-    ViewportWithCache(Point sceneSize, InputStream inputStream) throws IOException {
+    ViewportWithCache(Point sceneSize, String filepath) throws IOException {
         mSceneSize = sceneSize;
 
-        mVisableViewport = new Viewport();
+        mVisibleViewport = new Viewport();
+        mVisibleViewport.CONFIG = DEFAULT_CONFIG;
 
         mCachedBitmap = null;
+        mCachedWindow = null;
 
-        mDecoder = BitmapRegionDecoder.newInstance(inputStream, false);
+        mDecoder = BitmapRegionDecoder.newInstance(filepath, false);
 
-        // Create the sample image
-        int DOWN_SAMPLE_SHIFT = 2;
+        // TODO Create the sample image, should calculate DOWN_SAMPLE_SHIFT here
         Options opts = new Options();
         opts.inPreferredConfig = DEFAULT_CONFIG;
         opts.inSampleSize = (1 << DOWN_SAMPLE_SHIFT);
-        mSampledBitmap = BitmapFactory.decodeStream(inputStream, null, opts);
-    }
-
-    @Override
-    protected void finalize() throws Throwable {
-        if (mCacheThread != null) {
-            mCacheThread.cancel();
-        }
-
-        if (null != mCachedBitmap) {
-            mCachedBitmap.recycle();
-        }
-        super.finalize();
+        mSampledBitmap = BitmapFactory.decodeFile(filepath, opts);
     }
 
     ViewportWithCache startCaching() {
@@ -162,22 +158,112 @@ class ViewportWithCache implements IViewport {
     /**
      * 将Visible Viewport中的数据绘制到
      */
+    @Override
     public IViewport draw(Canvas canvas) {
-        updateBitmap();
         synchronized (this) {
-            mVisableViewport.draw(canvas);
+            mVisibleViewport.draw(canvas);
+            setIsViewportBitmapChanged(false);
         }
 
         return this;
     }
 
+    private void loadSampleIntoViewport() {
+        if (getCacheState() != CacheState.UNINITIALIZED) {
+            synchronized (mVisibleViewport) {
+                if (null != mVisibleViewport.mBitmap) {
+                    Canvas canvas = new Canvas(mVisibleViewport.mBitmap);
+                    int left = (mVisibleViewport.mWindow.left >> DOWN_SAMPLE_SHIFT);
+                    int top = (mVisibleViewport.mWindow.top >> DOWN_SAMPLE_SHIFT);
+                    int right = left + (mVisibleViewport.mWindow.width() >> DOWN_SAMPLE_SHIFT);
+                    int bottom = top + (mVisibleViewport.mWindow.height() >> DOWN_SAMPLE_SHIFT);
+                    Rect srcRect = new Rect(left, top, right, bottom);
+                    Rect identity = new Rect(0, 0, canvas.getWidth(), canvas.getHeight());
+                    canvas.drawBitmap(mSampledBitmap, srcRect, identity, null);
+                }
+            }
+        }
+    }
+
+    void loadBitmapIntoViewport(Bitmap bitmap) {
+        synchronized (mVisibleViewport) {
+            if (null != mVisibleViewport.mBitmap) {
+                Rect srcRect = new Rect(0, 0, 0, 0);
+                Rect dstRect = new Rect(0, 0, 0, 0);
+                Point dstSize = new Point();
+                int left = mVisibleViewport.mWindow.left - mCachedWindow.left;
+                int top = mVisibleViewport.mWindow.top - mCachedWindow.top;
+                int right = left + mVisibleViewport.mWindow.width();
+                int bottom = top + mVisibleViewport.mWindow.height();
+                mVisibleViewport.getPhysicalSize(dstSize);
+                srcRect.set(left, top, right, bottom);
+                dstRect.set(0, 0, dstSize.x, dstSize.y);
+                Canvas canvas = new Canvas(mVisibleViewport.mBitmap);
+                canvas.drawBitmap(bitmap, srcRect, dstRect, null);
+            }
+        }
+    }
+
     /**
-     * 根据Visible Viewport的位置更新Cache中的Bitmap和Visible Viewport中的数据
+     * 根据CacheState的更新Visible Viewport中的Bitmap
      * 
      * @param cachedViewport
      */
-    private void updateBitmap() {
-        // TODO
+    void updateVisibleViewportBitmap() {
+        // This function needs improvement. We shouldn't update viewport until it's changed.
+        Bitmap bitmap = null; // If this is null at the bottom, then load from the sample
+        synchronized (this) {
+            switch (getCacheState()) {
+                case CacheState.UNINITIALIZED: {
+                    // nothing can be done -- should never get here
+                    return;
+                }
+                case CacheState.INITIALIZED: {
+                    // time to cache some data
+                    setCacheState(CacheState.START_UPDATE);
+                    mCacheThread.interrupt();
+                    break;
+                }
+                case CacheState.START_UPDATE: {
+                    // I already told the thread to start
+                    break;
+                }
+                case CacheState.IN_UPDATE: {
+                    // Already reading some data, just use the sample
+                    break;
+                }
+                case CacheState.SUSPEND: {
+                    // Loading from cache suspended.
+                    break;
+                }
+                case CacheState.READY: {
+                    // I have some data to show
+                    if (mCachedBitmap == null) {
+                        // Start the cache
+                        setCacheState(CacheState.START_UPDATE);
+                        mCacheThread.interrupt();
+                    } else if (!mCachedWindow.contains(mVisibleViewport.mWindow)) {
+                        setCacheState(CacheState.START_UPDATE);
+                        mCacheThread.interrupt();
+                    } else {
+                        // Happy case -- the cache.window already contains the viewport.window
+                        bitmap = mCachedBitmap;
+                    }
+                    break;
+                }
+            }
+        }
+
+        if (isSampledBitmapChanged() || isViewportBitmapChanged()) {
+            if (bitmap != null) {
+                loadBitmapIntoViewport(bitmap);
+            } else {
+                loadSampleIntoViewport();
+            }
+
+            setIsViewportBitmapChanged(true);
+            setIsSampledBitmapChanged(false);
+        }
     }
 
     int getCacheState() {
@@ -191,6 +277,30 @@ class ViewportWithCache implements IViewport {
         return this;
     }
 
+    boolean isViewportBitmapChanged() {
+        synchronized (this) {
+            return mIsViewportBitmapChanged;
+        }
+    }
+
+    private void setIsViewportBitmapChanged(boolean flag) {
+        synchronized (this) {
+            mIsViewportBitmapChanged = flag;
+        }
+    }
+
+    private void setIsSampledBitmapChanged(boolean flag) {
+        synchronized (this) {
+            mIsSampledBitmapChanged = flag;
+        }
+    }
+
+    private boolean isSampledBitmapChanged() {
+        synchronized (this) {
+            return mIsSampledBitmapChanged;
+        }
+    }
+
     /**
      * 
      */
@@ -199,6 +309,7 @@ class ViewportWithCache implements IViewport {
             if (null != mCachedBitmap) {
                 mCachedBitmap.recycle();
                 mCachedBitmap = null;
+                mCachedWindow = null;
             }
         }
     }
@@ -207,18 +318,25 @@ class ViewportWithCache implements IViewport {
      * Not enough memory for caching
      */
     public void fillCacheOutOfMemoryError(OutOfMemoryError e) {
-        mCacheInlargePercent = 0;
+        synchronized (this) {
+            if (mCacheInlargePercent > 0) {
+                mCacheInlargePercent--;
+            }
+        }
     }
 
     /**
      * Calculate the region to be cached
      */
     Rect calculateCacheWindow() {
-        Rect visiableViewportRect = mVisableViewport.mWindow;
-        Rect cachedRegionRect = visiableViewportRect;
+        final Rect visiableViewportRect = mVisibleViewport.mWindow;
+        Rect cachedRegionRect = new Rect(visiableViewportRect);
 
-        // TODO This function is not correct, I think.
-        long bytesToUse = Runtime.getRuntime().maxMemory() * mCacheInlargePercent / 100;
+        long bytesToUse = 0;
+        synchronized (this) {
+            // TODO This function is incorrect, I suppose
+            bytesToUse = Runtime.getRuntime().maxMemory() * mCacheInlargePercent / 100;
+        }
 
         if (bytesToUse > 0) {
             cachedRegionRect = new Rect();
@@ -273,10 +391,8 @@ class ViewportWithCache implements IViewport {
 
             // Set the origin based on our new calculated values.
             cachedRegionRect.set(left, top, right, bottom);
-            Log.d(TAG, "new cache = " + cachedRegionRect.toShortString() + " size=" + mSceneSize.toString());
         }
 
-        Log.d(TAG, "new cache = " + cachedRegionRect.toShortString() + " size=" + mSceneSize.toString());
         return cachedRegionRect;
     }
 
@@ -289,14 +405,16 @@ class ViewportWithCache implements IViewport {
 
         Rect newCacheRect = calculateCacheWindow();
         boolean isBitmapReusable = false;
-        if (null != mCachedBitmap) {
-            if (android.os.Build.VERSION.SDK_INT >= android.os.Build.VERSION_CODES.JELLY_BEAN) {
-                // BitmapRegionDecoder support for inBitmap was introduced in JELLY_BEAN
-                int width = newCacheRect.right - newCacheRect.left;
-                int height = newCacheRect.bottom - newCacheRect.top;
-                if (width == mCachedBitmap.getWidth() && height == mCachedBitmap.getHeight()) {
-                    // Only newCacheRect is the same size
-                    isBitmapReusable = true;
+        synchronized (this) {
+            if (null != mCachedBitmap) {
+                if (android.os.Build.VERSION.SDK_INT >= android.os.Build.VERSION_CODES.JELLY_BEAN) {
+                    // BitmapRegionDecoder support for inBitmap was introduced in JELLY_BEAN
+                    int width = newCacheRect.right - newCacheRect.left;
+                    int height = newCacheRect.bottom - newCacheRect.top;
+                    if (width == mCachedBitmap.getWidth() && height == mCachedBitmap.getHeight()) {
+                        // Only when newCacheRect is the same size
+                        isBitmapReusable = true;
+                    }
                 }
             }
         }
@@ -319,6 +437,9 @@ class ViewportWithCache implements IViewport {
             } else {
                 mCachedBitmap = mDecoder.decodeRegion(newCacheRect, opts);
             }
+
+            mCachedWindow = newCacheRect;
+            setIsSampledBitmapChanged(true);
         }
 
         setCacheState(CacheState.READY);
@@ -331,29 +452,31 @@ class ViewportWithCache implements IViewport {
     // region implements IViewport
     @Override
     public IViewport setOrigin(Point origin) {
-        mVisableViewport.setOrigin(origin);
+        mVisibleViewport.setOrigin(origin);
+        setIsViewportBitmapChanged(true);
         return this;
     }
 
     @Override
     public Point getOrigin(Point origin) {
-        return mVisableViewport.getOrigin(origin);
+        return mVisibleViewport.getOrigin(origin);
     }
 
     @Override
     public IViewport setSize(Point size) {
-        mVisableViewport.setSize(size);
+        mVisibleViewport.setSize(size);
+        setIsViewportBitmapChanged(true);
         return this;
     }
 
     @Override
     public Point getSize(Point size) {
-        return mVisableViewport.getSize(size);
+        return mVisibleViewport.getSize(size);
     }
 
     @Override
     public Point getPhysicalSize(Point size) {
-        return mVisableViewport.getPhysicalSize(size);
+        return mVisibleViewport.getPhysicalSize(size);
     }
 
     // endregion implements IViewport
